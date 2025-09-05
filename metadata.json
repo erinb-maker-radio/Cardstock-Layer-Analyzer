@@ -1,0 +1,5 @@
+{
+  "name": "Cardstock Layer Analyzer",
+  "description": "An application to analyze concept art of layered cardstock and isolate individual layers for production.",
+  "requestFramePermissions": []
+}
