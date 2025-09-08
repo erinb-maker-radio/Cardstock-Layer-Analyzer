@@ -1,32 +1,34 @@
 import React, { useState } from 'react';
 import type { AnalysisResponse } from '../types';
-import { LoadingSpinner } from './LoadingSpinner';
 
 interface AnalysisResultProps {
   result: AnalysisResponse;
-  onGenerateIsolationDescription: () => void;
-  onIsolateLayer: (description: string) => void;
-  onApproveLayer: () => void;
-  onRerunIsolation: () => void;
-  isGeneratingDescription: boolean;
-  isIsolating: boolean;
+  layerNumber?: number;
 }
 
-export const AnalysisResult: React.FC<AnalysisResultProps> = ({ 
-  result, 
-  onGenerateIsolationDescription, 
-  onIsolateLayer, 
-  onApproveLayer,
-  onRerunIsolation,
-  isGeneratingDescription, 
-  isIsolating 
-}) => {
+export const AnalysisResult: React.FC<AnalysisResultProps> = ({ result, layerNumber = 1 }) => {
   const [showDetails, setShowDetails] = useState(false);
+
+  const getStatusBadge = () => {
+    if (result.layer_approved) {
+      return <span className="text-xs px-2 py-1 bg-green-600/30 text-green-400 rounded-full">Approved</span>;
+    }
+    if (result.layer_isolated) {
+      return <span className="text-xs px-2 py-1 bg-yellow-600/30 text-yellow-400 rounded-full">Isolated</span>;
+    }
+    if (result.isolation_description) {
+      return <span className="text-xs px-2 py-1 bg-blue-600/30 text-blue-400 rounded-full">Description Ready</span>;
+    }
+    return <span className="text-xs px-2 py-1 bg-slate-600/30 text-slate-400 rounded-full">Analyzed</span>;
+  };
 
   return (
     <div className="bg-slate-800/50 backdrop-blur-sm rounded-lg p-4 border border-slate-700 animate-fade-in">
       <div className="flex items-center justify-between mb-3">
-        <h2 className="text-lg font-bold text-indigo-400">Layer 1 Analysis</h2>
+        <div className="flex items-center gap-2">
+          <h2 className="text-lg font-bold text-indigo-400">Layer {layerNumber} Analysis</h2>
+          {getStatusBadge()}
+        </div>
         <button
           onClick={() => setShowDetails(!showDetails)}
           className="text-slate-400 hover:text-slate-300 transition-colors"
@@ -45,7 +47,7 @@ export const AnalysisResult: React.FC<AnalysisResultProps> = ({
       </div>
 
       {showDetails && (
-        <div className="space-y-3 mb-4">
+        <div className="space-y-3">
           <div>
             <h3 className="font-semibold text-sm text-slate-200 mb-1">Description</h3>
             <p className="text-slate-300 text-sm bg-slate-900/50 p-2 rounded border border-slate-700">
@@ -68,36 +70,6 @@ export const AnalysisResult: React.FC<AnalysisResultProps> = ({
           )}
         </div>
       )}
-
-      <div className="flex gap-2">
-        {!result.isolation_description ? (
-          <button
-            onClick={onGenerateIsolationDescription}
-            disabled={isGeneratingDescription}
-            className={`flex-1 inline-flex items-center justify-center px-4 py-2 text-sm text-white font-bold rounded-lg transition-all focus:outline-none
-              ${isGeneratingDescription
-                ? 'bg-slate-600 cursor-not-allowed'
-                : 'bg-green-600 hover:bg-green-700 focus:ring-2 focus:ring-green-500'
-              }`}
-          >
-            {isGeneratingDescription && <LoadingSpinner />}
-            {isGeneratingDescription ? 'Generating...' : 'Generate Description'}
-          </button>
-        ) : !result.layer_isolated ? (
-          <button
-            onClick={() => onIsolateLayer(result.isolation_description!)}
-            disabled={isIsolating}
-            className={`flex-1 inline-flex items-center justify-center px-4 py-2 text-sm text-white font-bold rounded-lg transition-all focus:outline-none
-              ${isIsolating
-                ? 'bg-slate-600 cursor-not-allowed'
-                : 'bg-indigo-600 hover:bg-indigo-700 focus:ring-2 focus:ring-indigo-500'
-              }`}
-          >
-            {isIsolating && <LoadingSpinner />}
-            {isIsolating ? 'Isolating...' : 'Isolate Layer'}
-          </button>
-        ) : null}
-      </div>
     </div>
   );
 };

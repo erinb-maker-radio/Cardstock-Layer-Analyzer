@@ -14,9 +14,10 @@ import { AnalysisResult } from './components/AnalysisResult';
 import { LoadingSpinner } from './components/LoadingSpinner';
 import { TestingSuite } from './components/TestingSuite';
 import { MultiApproachTestSuite } from './components/MultiApproachTestSuite';
-import { ApprovalControls } from './components/ApprovalControls';
+import { ButtonBar } from './components/ButtonBar';
 import { analyzeImageLayer, generateIsolationDescription, isolateLayer } from './services/geminiService';
-import type { AnalysisResponse } from './types';
+import { layerStorage } from './services/layerStorage';
+import type { AnalysisResponse, ProjectState, LayerData } from './types';
 
 // Helper to convert file to base64
 const fileToGenerativePart = async (file: File) => {
@@ -38,6 +39,12 @@ export default function App() {
   const [isGenerating, setIsGenerating] = useState<boolean>(false);
   const [isGeneratingDescription, setIsGeneratingDescription] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
+  
+  // Project state for multi-layer management
+  const [project, setProject] = useState<ProjectState>({
+    layers: [],
+    currentLayerIndex: 0
+  });
 
   useEffect(() => {
     // Add global animation styles
@@ -71,20 +78,43 @@ export default function App() {
   }, [imageFile]);
 
 
-  const handleImageUpload = useCallback((file: File) => {
+  const handleImageUpload = useCallback(async (file: File) => {
     setImageFile(file);
     setAnalysisResult(null);
     setError(null);
+    
+    // Initialize project with original image
+    const newProject: ProjectState = {
+      originalImage: file,
+      currentWorkingImage: file,
+      layers: [],
+      currentLayerIndex: 0
+    };
+    setProject(newProject);
+    layerStorage.saveProject(newProject);
+    
+    // Auto-run analysis after image upload
+    setTimeout(() => {
+      handleAnalyzeClick(file);
+    }, 500); // Small delay for UX
   }, []);
 
   const handleClearImage = useCallback(() => {
     setImageFile(null);
     setAnalysisResult(null);
     setError(null);
+    
+    // Reset project state
+    setProject({
+      layers: [],
+      currentLayerIndex: 0
+    });
+    layerStorage.clearProject();
   }, []);
 
-  const handleAnalyzeClick = useCallback(async () => {
-    if (!imageFile) {
+  const handleAnalyzeClick = useCallback(async (file?: File) => {
+    const targetFile = file || imageFile;
+    if (!targetFile) {
       setError("Please upload an image first.");
       return;
     }
@@ -92,9 +122,14 @@ export default function App() {
     setError(null);
     setAnalysisResult(null);
     try {
-      const imagePart = await fileToGenerativePart(imageFile);
+      const imagePart = await fileToGenerativePart(targetFile);
       const result = await analyzeImageLayer(imagePart.inlineData.data, imagePart.inlineData.mimeType);
       setAnalysisResult(result);
+      
+      // Auto-generate isolation description after analysis
+      setTimeout(() => {
+        handleGenerateIsolationDescription(targetFile, result);
+      }, 500);
     // FIX: Add type annotation to the catch clause variable to resolve "Cannot find name 'err'" error, which can be caused by strict TypeScript configurations.
     } catch (err: any) {
       setError(err instanceof Error ? err.message : "An unknown error occurred during analysis.");
@@ -103,22 +138,33 @@ export default function App() {
     }
   }, [imageFile]);
 
-  const handleGenerateIsolationDescription = useCallback(async () => {
-    if (!imageFile || !analysisResult) {
+  const handleGenerateIsolationDescription = useCallback(async (file?: File, result?: AnalysisResponse, layerNum?: number) => {
+    const targetFile = file || imageFile;
+    const targetResult = result || analysisResult;
+    const currentLayerNum = layerNum || (project.currentLayerIndex + 1);
+    
+    console.log('🔹 handleGenerateIsolationDescription called');
+    console.log('🔹 targetFile:', targetFile ? 'exists' : 'missing');
+    console.log('🔹 targetResult:', targetResult ? 'exists' : 'missing');
+    console.log('🔹 layerNum parameter:', layerNum);
+    console.log('🔹 currentLayerNum calculated:', currentLayerNum);
+    
+    if (!targetFile || !targetResult) {
       setError("Analysis result not available for generating isolation description.");
       return;
     }
     setIsGeneratingDescription(true);
     setError(null);
     try {
-      const imagePart = await fileToGenerativePart(imageFile);
+      const imagePart = await fileToGenerativePart(targetFile);
       const isolationDescription = await generateIsolationDescription(
         imagePart.inlineData.data, 
         imagePart.inlineData.mimeType, 
-        analysisResult.layer_1_description
+        targetResult.layer_1_description,
+        currentLayerNum
       );
       setAnalysisResult({
-        ...analysisResult,
+        ...targetResult,
         isolation_description: isolationDescription
       });
     } catch (err: any) {
@@ -126,7 +172,7 @@ export default function App() {
     } finally {
       setIsGeneratingDescription(false);
     }
-  }, [imageFile, analysisResult]);
+  }, [imageFile, analysisResult, project.currentLayerIndex]);
 
   const handleIsolateLayer = useCallback(async (description: string) => {
       if (!imageFile) {
@@ -137,7 +183,10 @@ export default function App() {
       setError(null);
       try {
           const imagePart = await fileToGenerativePart(imageFile);
-          const result = await isolateLayer(imagePart.inlineData.data, imagePart.inlineData.mimeType, description);
+          const currentLayerNum = project.currentLayerIndex + 1;
+          console.log('🔸 Isolating layer', currentLayerNum, 'with description:', description);
+          
+          const result = await isolateLayer(imagePart.inlineData.data, imagePart.inlineData.mimeType, description, currentLayerNum);
           const newBlob = new Blob([new Uint8Array(atob(result.base64).split('').map(char => char.charCodeAt(0)))], { type: result.mimeType });
           const newFile = new File([newBlob], "isolated_layer.png", { type: result.mimeType });
           setImageFile(newFile);
@@ -149,10 +198,103 @@ export default function App() {
       } finally {
           setIsGenerating(false);
       }
-  }, [imageFile]);
+  }, [imageFile, project.currentLayerIndex]);
 
-  const handleApproveLayer = useCallback(() => {
+  const handleApproveLayer = useCallback(async () => {
+    if (!analysisResult || !imageFile) return;
+    
+    // Mark current analysis as approved
     setAnalysisResult(prev => prev ? { ...prev, layer_approved: true } : null);
+    
+    // Save current layer to project
+    const currentLayerNum = project.currentLayerIndex + 1;
+    console.log('Approving layer:', currentLayerNum);
+    console.log('Current project state:', project);
+    
+    const newLayer: LayerData = {
+      id: `layer-${currentLayerNum}`,
+      name: `Layer ${currentLayerNum}`,
+      description: analysisResult.layer_1_description, // This will be dynamic based on layer
+      reasoning: analysisResult.reasoning,
+      isolation_description: analysisResult.isolation_description,
+      imageFile: imageFile,
+      isolated: true,
+      approved: true
+    };
+    
+    // Update project with new layer
+    const updatedProject = {
+      ...project,
+      originalImage: project.originalImage || imageFile,
+      layers: [...project.layers, newLayer],
+      currentLayerIndex: project.currentLayerIndex + 1
+    };
+    
+    setProject(updatedProject);
+    layerStorage.saveProject(updatedProject);
+    
+    // Start Layer 2 analysis automatically
+    setTimeout(() => {
+      startNextLayerAnalysis(updatedProject);
+    }, 1000);
+  }, [analysisResult, imageFile, project]);
+  
+  const startNextLayerAnalysis = useCallback(async (currentProject: ProjectState) => {
+    if (!currentProject.originalImage) return;
+    
+    const nextLayerNum = currentProject.currentLayerIndex + 1;
+    const previousLayerDescriptions = currentProject.layers.map(layer => layer.description);
+    
+    console.log('Starting analysis for layer:', nextLayerNum);
+    console.log('Project currentLayerIndex:', currentProject.currentLayerIndex);
+    console.log('Previous layer descriptions:', previousLayerDescriptions);
+    
+    // Reset to original image for next layer analysis
+    setImageFile(currentProject.originalImage);
+    setAnalysisResult(null);
+    setError(null);
+    setIsLoading(true);
+    
+    // Start analysis for next layer using original image
+    try {
+      const imagePart = await fileToGenerativePart(currentProject.originalImage);
+      console.log('About to call analyzeImageLayer with:', { 
+        layerNumber: nextLayerNum, 
+        previousLayersCount: previousLayerDescriptions.length 
+      });
+      
+      const result = await analyzeImageLayer(
+        imagePart.inlineData.data, 
+        imagePart.inlineData.mimeType, 
+        nextLayerNum, 
+        previousLayerDescriptions
+      );
+      
+      // Convert result to expected format (this is a temporary bridge)
+      const layerDescriptionKey = `layer_${nextLayerNum}_description`;
+      const adaptedResult: AnalysisResponse = {
+        layer_1_description: result[layerDescriptionKey] || result.layer_1_description || `Layer ${nextLayerNum} description not found`,
+        reasoning: result.reasoning,
+      };
+      
+      console.log('Layer analysis result:', JSON.stringify(result, null, 2));
+      console.log('Looking for key:', layerDescriptionKey);
+      console.log('Adapted result:', JSON.stringify(adaptedResult, null, 2));
+      
+      setAnalysisResult(adaptedResult);
+      
+      // Auto-generate isolation description
+      console.log('🔸 About to auto-generate isolation description for Layer', nextLayerNum);
+      setTimeout(() => {
+        console.log('🔸 Calling handleGenerateIsolationDescription');
+        handleGenerateIsolationDescription(currentProject.originalImage, adaptedResult, nextLayerNum);
+      }, 500);
+      
+    } catch (err: any) {
+      setError(err instanceof Error ? err.message : `An error occurred analyzing Layer ${nextLayerNum}.`);
+    } finally {
+      setIsLoading(false);
+    }
   }, []);
 
   const handleRerunIsolation = useCallback(() => {
@@ -175,18 +317,11 @@ export default function App() {
                 disabled={isLoading || isGenerating || isGeneratingDescription}
               />
             ) : (
-              <div className="bg-slate-800 rounded-lg p-4 flex items-center justify-between border border-slate-700 animate-fade-in">
-                <div className="overflow-hidden">
-                  <p className="text-sm font-semibold text-slate-100">Image Loaded:</p>
-                  <p className="text-xs text-slate-400 truncate pr-2" title={imageFile.name}>{imageFile.name}</p>
+              <div className="bg-slate-800 rounded-lg p-4 border border-slate-700 animate-fade-in">
+                <div>
+                  <p className="text-sm font-semibold text-slate-100">Image Loaded</p>
+                  <p className="text-xs text-slate-400 truncate" title={imageFile.name}>{imageFile.name}</p>
                 </div>
-                <button 
-                  onClick={handleClearImage}
-                  disabled={isLoading || isGenerating || isGeneratingDescription}
-                  className="flex-shrink-0 text-sm font-bold text-indigo-400 hover:text-indigo-300 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                >
-                  Change
-                </button>
               </div>
             )}
             
@@ -199,24 +334,10 @@ export default function App() {
                   </div>
                 )}
                 
-                <button
-                    onClick={handleAnalyzeClick}
-                    disabled={!canAnalyze}
-                    className="w-full inline-flex items-center justify-center px-6 py-3 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-600 disabled:cursor-not-allowed text-white font-bold rounded-lg shadow-lg transition-all duration-300 transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                  >
-                    {isLoading && <LoadingSpinner />}
-                    {isLoading ? 'Analyzing Layer 1...' : 'Identify Layer 1'}
-                </button>
-                
-                {!isLoading && analysisResult && (
+                {analysisResult && (
                   <AnalysisResult 
                     result={analysisResult} 
-                    onGenerateIsolationDescription={handleGenerateIsolationDescription}
-                    onIsolateLayer={handleIsolateLayer}
-                    onApproveLayer={handleApproveLayer}
-                    onRerunIsolation={handleRerunIsolation}
-                    isGeneratingDescription={isGeneratingDescription}
-                    isIsolating={isGenerating}
+                    layerNumber={project.currentLayerIndex + 1}
                   />
                 )}
               </div>
@@ -224,20 +345,30 @@ export default function App() {
           </div>
 
           {/* Right Column: Viewer */}
-          <div className="lg:sticky lg:top-24 space-y-4">
+          <div className="lg:sticky lg:top-24">
             <ImageViewer imageUrl={imageUrl} />
-            <ApprovalControls 
-              showControls={analysisResult?.layer_isolated === true && !analysisResult?.layer_approved}
-              onApprove={handleApproveLayer}
-              onRerun={handleRerunIsolation}
-              isApproved={analysisResult?.layer_approved === true}
-            />
           </div>
         </div>
       </main>
-      <footer className="container mx-auto p-4">
+      <footer className="container mx-auto p-4 pb-20">
         <RulesPanel />
       </footer>
+      
+      <ButtonBar
+        imageFile={imageFile}
+        analysisResult={analysisResult}
+        isLoading={isLoading}
+        isGenerating={isGenerating}
+        isGeneratingDescription={isGeneratingDescription}
+        canAnalyze={canAnalyze}
+        currentLayerNumber={project.currentLayerIndex + 1}
+        onClearImage={handleClearImage}
+        onAnalyze={handleAnalyzeClick}
+        onGenerateDescription={handleGenerateIsolationDescription}
+        onIsolateLayer={() => analysisResult?.isolation_description && handleIsolateLayer(analysisResult.isolation_description)}
+        onApproveLayer={handleApproveLayer}
+        onRerunIsolation={handleRerunIsolation}
+      />
     </div>
   );
 }

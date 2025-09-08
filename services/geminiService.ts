@@ -18,9 +18,9 @@ const ai = new GoogleGenAI({ apiKey: import.meta.env.VITE_API_KEY });
 const analysisModel = 'gemini-2.5-flash';
 const imageEditingModel = 'gemini-2.5-flash-image-preview';
 
-const analysisSystemInstruction = `
+const getAnalysisSystemInstruction = (layerNumber: number, previousLayers?: string[]) => `
 You are an expert in analyzing layered vector art and papercraft. 
-Your task is to identify "Layer 1" from an image provided by the user.
+Your task is to identify "Layer ${layerNumber}" from an image provided by the user.
 Follow these rules strictly:
 
 1.  **The "Conceptual Component" Rule:** A layer is a single conceptual component of the artwork. This component is a set of shapes that would be cut from the same single sheet of cardstock.
@@ -35,28 +35,48 @@ Follow these rules strictly:
     - Shadows cast by other objects.
     - Thin outlines that border a different colored shape.
 
-4.  **Layer Identification:** Layer 1 is the most foreground conceptual component.
-  
+4.  **Layer Identification with Depth Understanding:** 
+    - Layer 1 is the most foreground conceptual component.
+    - Layer 2 is the second most foreground component (behind Layer 1) and may be partially obscured by Layer 1's shadow or overlap.
+    - Layer 3 is the third most foreground component (behind Layers 1 and 2) and may have shadows from upper layers.
+    - Continue this pattern for subsequent layers.
+    - **CRITICAL**: When identifying Layer ${layerNumber}, consider that it may have shadows cast onto it by the layers in front of it.
+
+${previousLayers && previousLayers.length > 0 ? `
+5.  **Previous Layers Context and Shadow Analysis:**
+    The following layers have already been identified and isolated:
+    ${previousLayers.map((desc, idx) => `- Layer ${idx + 1}: ${desc}`).join('\n    ')}
+    
+    **IMPORTANT FOR LAYER ${layerNumber}:**
+    - Layer ${layerNumber} should be DISTINCT from all previously identified layers.
+    - Layer ${layerNumber} is positioned BEHIND the layers listed above.
+    - Look for areas where Layer ${layerNumber} may be visible around the edges of upper layers.
+    - Layer ${layerNumber} may have darker regions that are shadows cast by Layer ${layerNumber - 1} or other upper layers.
+    - Do NOT identify the shadows themselves as separate layers - shadows are cast ON Layer ${layerNumber}, not separate from it.
+    - Focus on the actual underlying shapes/components that would exist as physical cardstock pieces.
+` : ''}
+
 You MUST respond in JSON format.
 `;
 
-const analysisSchema = {
+const getAnalysisSchema = (layerNumber: number) => ({
   type: Type.OBJECT,
   properties: {
-    layer_1_description: {
+    [`layer_${layerNumber}_description`]: {
       type: Type.STRING,
-      description: 'A detailed visual description of only the identified Layer 1. Be specific about its shape, color, and position.'
+      description: `A detailed visual description of only the identified Layer ${layerNumber}. Be specific about its shape, color, and position.`
     },
     reasoning: {
       type: Type.STRING,
-      description: 'A brief explanation of why this was identified as Layer 1, referencing the provided rules.'
+      description: `A brief explanation of why this was identified as Layer ${layerNumber}, referencing the provided rules.`
     }
   },
-  propertyOrdering: ["layer_1_description", "reasoning"],
-};
+  propertyOrdering: [`layer_${layerNumber}_description`, "reasoning"],
+});
 
 
-export async function analyzeImageLayer(base64ImageData: string, mimeType: string) {
+export async function analyzeImageLayer(base64ImageData: string, mimeType: string, layerNumber: number = 1, previousLayers?: string[]) {
+  console.log('🔍 analyzeImageLayer called with layerNumber:', layerNumber, 'previousLayers:', previousLayers?.length || 0);
   const imagePart = {
     inlineData: {
       data: base64ImageData,
@@ -65,17 +85,24 @@ export async function analyzeImageLayer(base64ImageData: string, mimeType: strin
   };
 
   const textPart = {
-      text: "Based on the rules, analyze the provided image and identify Layer 1."
+      text: `Based on the rules, analyze the provided image and identify Layer ${layerNumber}.`
   };
 
   try {
+    const schema = getAnalysisSchema(layerNumber);
+    const systemInstruction = getAnalysisSystemInstruction(layerNumber, previousLayers);
+    
+    console.log(`Analyzing Layer ${layerNumber}:`);
+    console.log('Schema:', JSON.stringify(schema, null, 2));
+    console.log('System instruction preview:', systemInstruction.substring(0, 200) + '...');
+    
     const response = await ai.models.generateContent({
       model: analysisModel,
       contents: { parts: [imagePart, textPart] },
       config: {
-        systemInstruction: analysisSystemInstruction,
+        systemInstruction,
         responseMimeType: "application/json",
-        responseSchema: analysisSchema,
+        responseSchema: schema,
       },
     });
 
@@ -231,7 +258,7 @@ OUTPUT: Single-fill layer on transparent background.`
     }
 }
 
-export async function generateIsolationDescription(base64ImageData: string, mimeType: string, layerAnalysis: string): Promise<string> {
+export async function generateIsolationDescription(base64ImageData: string, mimeType: string, layerAnalysis: string, layerNumber: number = 1): Promise<string> {
   const imagePart = {
     inlineData: {
       data: base64ImageData,
@@ -242,17 +269,18 @@ export async function generateIsolationDescription(base64ImageData: string, mime
   const textPart = {
       text: `Based on this layer analysis: "${layerAnalysis}"
 
-Create a detailed description of what the ISOLATED layer should look like when extracted with transparency.
+Create a detailed description of what the ISOLATED Layer ${layerNumber} should look like when extracted with transparency.
 
 Your description should specify:
-1. What parts will be visible (the actual layer elements)
+1. What parts will be visible (the actual Layer ${layerNumber} elements)
 2. What parts will be transparent (background and other layer colors)
 3. The single unified color/fill that should be applied to all visible elements
 4. The overall appearance on a transparent background
 
+
 Focus on describing the visual result after isolation, not the analysis process.
 
-Example format: "The isolated layer shows [specific elements] rendered in [single color] on a completely transparent background, with all [other colors/elements] areas made transparent."`
+Example format: "The isolated layer shows [specific elements] rendered in [single color] on a completely transparent background, with all [other colors/elements] areas made transparent." `
   };
 
   try {
@@ -271,7 +299,7 @@ Example format: "The isolated layer shows [specific elements] rendered in [singl
   }
 }
 
-export async function isolateLayer(base64ImageData: string, mimeType: string, layerDescription: string): Promise<{ base64: string, mimeType: string }> {
+export async function isolateLayer(base64ImageData: string, mimeType: string, layerDescription: string, layerNumber: number = 1): Promise<{ base64: string, mimeType: string }> {
     const imagePart = {
         inlineData: {
           data: base64ImageData,
@@ -280,7 +308,7 @@ export async function isolateLayer(base64ImageData: string, mimeType: string, la
       };
 
     const textPart = {
-        text: `Your task is to perform a precise image masking operation. Your output MUST be a PNG image with a transparent alpha channel.
+        text: `Your task is to perform a precise image masking operation for Layer ${layerNumber}. Your output MUST be a PNG image with a transparent alpha channel.
 
 The new image will contain ONLY the specific layer described here: "${layerDescription}".
 
@@ -289,6 +317,7 @@ Follow these rules with absolute precision. These are commands, not suggestions.
 1.  **ABSOLUTE PRIORITY: TRANSPARENT BACKGROUND.** The output format MUST be a PNG with a fully transparent background. Everything that is NOT part of the described layer must have an alpha value of 0. DO NOT output a solid background.
 
 2.  **ABSOLUTE PRIORITY: SINGLE FILL UNIFICATION.** The final isolated layer shape you create MUST be unified into a single solid color. Identify the most dominant color of the described area in the original image and use that color for the entire shape. DO NOT include multiple colors, shades, or gradients. The result must be a single, clean shape with one solid fill color.
+
 
 3.  **EXECUTION:** Use the description to perfectly identify the correct conceptual component in the original image. Create a mask from this component. Produce a new PNG image containing only this masked component, filled with the unified color, on a transparent background.`
     };
