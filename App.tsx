@@ -1,3 +1,10 @@
+/**
+ * 🚨 READ FIRST: /DEVELOPMENT_GUIDE.md
+ * 
+ * Main application component with testing mode integration.
+ * Contains UI state management and core user interactions.
+ * Testing mode provides 10-iteration consistency validation.
+ */
 import React, { useState, useCallback, useEffect } from 'react';
 import { Header } from './components/Header';
 import { ImageUploader } from './components/ImageUploader';
@@ -5,7 +12,10 @@ import { RulesPanel } from './components/RulesPanel';
 import { ImageViewer } from './components/ImageViewer';
 import { AnalysisResult } from './components/AnalysisResult';
 import { LoadingSpinner } from './components/LoadingSpinner';
-import { analyzeImageLayer, isolateLayer } from './services/geminiService';
+import { TestingSuite } from './components/TestingSuite';
+import { MultiApproachTestSuite } from './components/MultiApproachTestSuite';
+import { ApprovalControls } from './components/ApprovalControls';
+import { analyzeImageLayer, generateIsolationDescription, isolateLayer } from './services/geminiService';
 import type { AnalysisResponse } from './types';
 
 // Helper to convert file to base64
@@ -26,6 +36,7 @@ export default function App() {
   const [analysisResult, setAnalysisResult] = useState<AnalysisResponse | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [isGenerating, setIsGenerating] = useState<boolean>(false);
+  const [isGeneratingDescription, setIsGeneratingDescription] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -92,6 +103,31 @@ export default function App() {
     }
   }, [imageFile]);
 
+  const handleGenerateIsolationDescription = useCallback(async () => {
+    if (!imageFile || !analysisResult) {
+      setError("Analysis result not available for generating isolation description.");
+      return;
+    }
+    setIsGeneratingDescription(true);
+    setError(null);
+    try {
+      const imagePart = await fileToGenerativePart(imageFile);
+      const isolationDescription = await generateIsolationDescription(
+        imagePart.inlineData.data, 
+        imagePart.inlineData.mimeType, 
+        analysisResult.layer_1_description
+      );
+      setAnalysisResult({
+        ...analysisResult,
+        isolation_description: isolationDescription
+      });
+    } catch (err: any) {
+      setError(err instanceof Error ? err.message : "An unknown error occurred during isolation description generation.");
+    } finally {
+      setIsGeneratingDescription(false);
+    }
+  }, [imageFile, analysisResult]);
+
   const handleIsolateLayer = useCallback(async (description: string) => {
       if (!imageFile) {
         setError("Original image file not found for isolation.");
@@ -105,9 +141,9 @@ export default function App() {
           const newBlob = new Blob([new Uint8Array(atob(result.base64).split('').map(char => char.charCodeAt(0)))], { type: result.mimeType });
           const newFile = new File([newBlob], "isolated_layer.png", { type: result.mimeType });
           setImageFile(newFile);
-          setAnalysisResult(null); // Clear old analysis AFTER new image is set
+          setAnalysisResult(prev => prev ? { ...prev, layer_isolated: true } : null);
           
-      // FIX: Add type annotation to the catch clause variable to resolve "Cannot find name 'err'" error.
+          
       } catch (err: any) {
           setError(err instanceof Error ? err.message : "An unknown error occurred during layer isolation.");
       } finally {
@@ -115,20 +151,28 @@ export default function App() {
       }
   }, [imageFile]);
 
+  const handleApproveLayer = useCallback(() => {
+    setAnalysisResult(prev => prev ? { ...prev, layer_approved: true } : null);
+  }, []);
 
-  const canAnalyze = imageFile && !isLoading && !isGenerating;
+  const handleRerunIsolation = useCallback(() => {
+    setAnalysisResult(prev => prev ? { ...prev, layer_isolated: false } : null);
+  }, []);
+
+
+  const canAnalyze = imageFile && !isLoading && !isGenerating && !isGeneratingDescription;
 
   return (
     <div className="min-h-screen bg-slate-900 text-slate-200 font-sans flex flex-col">
       <Header />
-      <main className="flex-grow container mx-auto p-4 md:p-8">
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+      <main className="flex-grow container mx-auto p-4">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
           {/* Left Column: Controls */}
-          <div className="flex flex-col gap-6">
+          <div className="flex flex-col gap-3">
             {!imageFile ? (
               <ImageUploader 
                 onImageUpload={handleImageUpload} 
-                disabled={isLoading || isGenerating}
+                disabled={isLoading || isGenerating || isGeneratingDescription}
               />
             ) : (
               <div className="bg-slate-800 rounded-lg p-4 flex items-center justify-between border border-slate-700 animate-fade-in">
@@ -138,7 +182,7 @@ export default function App() {
                 </div>
                 <button 
                   onClick={handleClearImage}
-                  disabled={isLoading || isGenerating}
+                  disabled={isLoading || isGenerating || isGeneratingDescription}
                   className="flex-shrink-0 text-sm font-bold text-indigo-400 hover:text-indigo-300 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                 >
                   Change
@@ -147,7 +191,7 @@ export default function App() {
             )}
             
             {imageFile && (
-              <div className="flex flex-col gap-6 animate-fade-in">
+              <div className="flex flex-col gap-3 animate-fade-in">
                 {error && (
                   <div className="bg-red-900/50 border border-red-700 text-red-200 px-4 py-3 rounded-lg text-center" role="alert">
                     <strong className="font-bold">Error: </strong>
@@ -158,7 +202,7 @@ export default function App() {
                 <button
                     onClick={handleAnalyzeClick}
                     disabled={!canAnalyze}
-                    className="w-full inline-flex items-center justify-center px-8 py-4 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-600 disabled:cursor-not-allowed text-white font-bold rounded-lg shadow-lg transition-all duration-300 transform hover:scale-105 focus:outline-none focus:ring-4 focus:ring-indigo-500 focus:ring-opacity-50"
+                    className="w-full inline-flex items-center justify-center px-6 py-3 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-600 disabled:cursor-not-allowed text-white font-bold rounded-lg shadow-lg transition-all duration-300 transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-indigo-500"
                   >
                     {isLoading && <LoadingSpinner />}
                     {isLoading ? 'Analyzing Layer 1...' : 'Identify Layer 1'}
@@ -167,7 +211,11 @@ export default function App() {
                 {!isLoading && analysisResult && (
                   <AnalysisResult 
                     result={analysisResult} 
+                    onGenerateIsolationDescription={handleGenerateIsolationDescription}
                     onIsolateLayer={handleIsolateLayer}
+                    onApproveLayer={handleApproveLayer}
+                    onRerunIsolation={handleRerunIsolation}
+                    isGeneratingDescription={isGeneratingDescription}
                     isIsolating={isGenerating}
                   />
                 )}
@@ -176,12 +224,18 @@ export default function App() {
           </div>
 
           {/* Right Column: Viewer */}
-          <div className="lg:sticky lg:top-24">
+          <div className="lg:sticky lg:top-24 space-y-4">
             <ImageViewer imageUrl={imageUrl} />
+            <ApprovalControls 
+              showControls={analysisResult?.layer_isolated === true && !analysisResult?.layer_approved}
+              onApprove={handleApproveLayer}
+              onRerun={handleRerunIsolation}
+              isApproved={analysisResult?.layer_approved === true}
+            />
           </div>
         </div>
       </main>
-      <footer className="container mx-auto p-4 md:p-8">
+      <footer className="container mx-auto p-4">
         <RulesPanel />
       </footer>
     </div>
