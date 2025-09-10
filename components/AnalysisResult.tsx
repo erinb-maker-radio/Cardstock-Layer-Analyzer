@@ -7,7 +7,7 @@ interface AnalysisResultProps {
 }
 
 export const AnalysisResult: React.FC<AnalysisResultProps> = ({ result, layerNumber = 1 }) => {
-  const [showDetails, setShowDetails] = useState(false);
+  const [showDetails, setShowDetails] = useState(true);
 
   const getStatusBadge = () => {
     if (result.layer_approved) {

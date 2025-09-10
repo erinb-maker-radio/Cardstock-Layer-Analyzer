@@ -15,21 +15,14 @@ import { LoadingSpinner } from './components/LoadingSpinner';
 import { TestingSuite } from './components/TestingSuite';
 import { MultiApproachTestSuite } from './components/MultiApproachTestSuite';
 import { ButtonBar } from './components/ButtonBar';
-import { analyzeImageLayer, generateIsolationDescription, isolateLayer } from './services/geminiService';
+import { LayersPanel } from './components/LayersPanel';
+import { ApiMonitor } from './components/ApiMonitor';
+import { ExportButton } from './components/ExportButton';
+import { analyzeImageLayer, generateIsolationDescription, isolateCurrentLayer, isolateLayer } from './services/geminiService';
 import { layerStorage } from './services/layerStorage';
+import { fileToGenerativePart } from './utils/imageUtils';
+import { weldLayersClientSide, generateWeldingDescriptionClientSide } from './utils/clientWelding';
 import type { AnalysisResponse, ProjectState, LayerData } from './types';
-
-// Helper to convert file to base64
-const fileToGenerativePart = async (file: File) => {
-  const base64EncodedDataPromise = new Promise<string>((resolve) => {
-    const reader = new FileReader();
-    reader.onloadend = () => resolve((reader.result as string).split(',')[1]);
-    reader.readAsDataURL(file);
-  });
-  return {
-    inlineData: { data: await base64EncodedDataPromise, mimeType: file.type },
-  };
-};
 
 export default function App() {
   const [imageFile, setImageFile] = useState<File | null>(null);
@@ -38,6 +31,8 @@ export default function App() {
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [isGenerating, setIsGenerating] = useState<boolean>(false);
   const [isGeneratingDescription, setIsGeneratingDescription] = useState<boolean>(false);
+  const [isWelding, setIsWelding] = useState<boolean>(false);
+  const [isGeneratingWeldingDescription, setIsGeneratingWeldingDescription] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   
   // Project state for multi-layer management
@@ -143,12 +138,6 @@ export default function App() {
     const targetResult = result || analysisResult;
     const currentLayerNum = layerNum || (project.currentLayerIndex + 1);
     
-    console.log('🔹 handleGenerateIsolationDescription called');
-    console.log('🔹 targetFile:', targetFile ? 'exists' : 'missing');
-    console.log('🔹 targetResult:', targetResult ? 'exists' : 'missing');
-    console.log('🔹 layerNum parameter:', layerNum);
-    console.log('🔹 currentLayerNum calculated:', currentLayerNum);
-    
     if (!targetFile || !targetResult) {
       setError("Analysis result not available for generating isolation description.");
       return;
@@ -156,10 +145,10 @@ export default function App() {
     setIsGeneratingDescription(true);
     setError(null);
     try {
-      const imagePart = await fileToGenerativePart(targetFile);
+      // Don't send image for description - just use the analysis text
       const isolationDescription = await generateIsolationDescription(
-        imagePart.inlineData.data, 
-        imagePart.inlineData.mimeType, 
+        "", // No image needed, we already have the analysis
+        "text/plain", 
         targetResult.layer_1_description,
         currentLayerNum
       );
@@ -167,6 +156,11 @@ export default function App() {
         ...targetResult,
         isolation_description: isolationDescription
       });
+      
+      // Auto-isolate after description for all layers
+      setTimeout(() => {
+        handleIsolateLayerWithFile(isolationDescription, targetFile);
+      }, 500);
     } catch (err: any) {
       setError(err instanceof Error ? err.message : "An unknown error occurred during isolation description generation.");
     } finally {
@@ -174,31 +168,163 @@ export default function App() {
     }
   }, [imageFile, analysisResult, project.currentLayerIndex]);
 
-  const handleIsolateLayer = useCallback(async (description: string) => {
-      if (!imageFile) {
+  const handleIsolateLayerWithFile = useCallback(async (description: string, sourceFile: File) => {
+      if (!sourceFile) {
         setError("Original image file not found for isolation.");
         return;
       }
       setIsGenerating(true);
       setError(null);
       try {
-          const imagePart = await fileToGenerativePart(imageFile);
+          const imagePart = await fileToGenerativePart(sourceFile);
           const currentLayerNum = project.currentLayerIndex + 1;
-          console.log('🔸 Isolating layer', currentLayerNum, 'with description:', description);
           
+          // Use isolateLayer for all layers (like in working version)
           const result = await isolateLayer(imagePart.inlineData.data, imagePart.inlineData.mimeType, description, currentLayerNum);
+            
           const newBlob = new Blob([new Uint8Array(atob(result.base64).split('').map(char => char.charCodeAt(0)))], { type: result.mimeType });
-          const newFile = new File([newBlob], "isolated_layer.png", { type: result.mimeType });
-          setImageFile(newFile);
-          setAnalysisResult(prev => prev ? { ...prev, layer_isolated: true } : null);
+          const newFile = new File([newBlob], `isolated_layer_${currentLayerNum}.png`, { type: result.mimeType });
           
+          setAnalysisResult(prev => prev ? { 
+            ...prev, 
+            layer_isolated: true,
+            isolated_image: newFile,
+            // Mark that isolation needs approval before welding
+            isolation_needs_approval: currentLayerNum > 1
+          } : null);
+          setImageFile(newFile);
+          
+          // For Layer 2+, DON'T auto-weld - wait for user approval
+          // Auto-welding removed - user must approve isolation first
           
       } catch (err: any) {
           setError(err instanceof Error ? err.message : "An unknown error occurred during layer isolation.");
       } finally {
           setIsGenerating(false);
       }
-  }, [imageFile, project.currentLayerIndex]);
+  }, [project.currentLayerIndex]);
+
+  const handleIsolateLayer = useCallback(async (description: string) => {
+      const sourceImage = imageFile || project.originalImage;
+      if (!sourceImage) {
+        setError("Original image file not found for isolation.");
+        return;
+      }
+      handleIsolateLayerWithFile(description, sourceImage);
+  }, [imageFile, project.originalImage, handleIsolateLayerWithFile]);
+
+  const handleGenerateWeldingDescription = useCallback(async (isolatedImage: File, currentLayerDescription: string, layerNum: number) => {
+    if (!project.originalImage) {
+      setError("Original image not found for welding description.");
+      return;
+    }
+    setIsGeneratingWeldingDescription(true);
+    setError(null);
+    try {
+      // Get isolated layer as base64 to extract dominant color
+      const isolatedImagePart = await fileToGenerativePart(isolatedImage, false);
+      const previousLayerDescriptions = project.layers.map(layer => layer.description);
+      
+      // Generate description using client-side logic (no API call)
+      const weldingDescription = generateWeldingDescriptionClientSide(
+        currentLayerDescription,
+        layerNum,
+        previousLayerDescriptions,
+        '0,0,0' // Will be updated during welding with actual color
+      );
+      
+      setAnalysisResult(prev => prev ? { 
+        ...prev, 
+        welding_description: weldingDescription 
+      } : null);
+      
+      // Auto-weld after description
+      setTimeout(() => {
+        handleWeldLayers(isolatedImage, currentLayerDescription, layerNum);
+      }, 500);
+      
+    } catch (err: any) {
+      setError(err instanceof Error ? err.message : "An unknown error occurred during welding description generation.");
+    } finally {
+      setIsGeneratingWeldingDescription(false);
+    }
+  }, [project.originalImage, project.layers]);
+
+  const handleWeldLayers = useCallback(async (isolatedImage: File, currentLayerDescription: string, layerNum: number) => {
+    if (!project.originalImage) {
+      setError("Original image not found for welding.");
+      return;
+    }
+    setIsWelding(true);
+    setError(null);
+    try {
+      // Convert current layer to base64
+      const isolatedImagePart = await fileToGenerativePart(isolatedImage, false);
+      
+      // Get all previous layer images as base64
+      const previousLayersBase64: string[] = [];
+      for (const layer of project.layers) {
+        if (layer.isolatedImage) {
+          const layerPart = await fileToGenerativePart(layer.isolatedImage, false);
+          previousLayersBase64.push(layerPart.inlineData.data);
+        }
+      }
+      
+      // Perform client-side welding (no API call!)
+      const result = await weldLayersClientSide(
+        isolatedImagePart.inlineData.data,
+        previousLayersBase64
+      );
+      
+      // Update welding description with actual color
+      const previousLayerDescriptions = project.layers.map(layer => layer.description);
+      const updatedWeldingDescription = generateWeldingDescriptionClientSide(
+        currentLayerDescription,
+        layerNum,
+        previousLayerDescriptions,
+        result.dominantColor
+      );
+      
+      // Convert base64 back to File
+      const weldedBlob = new Blob([new Uint8Array(atob(result.base64).split('').map(char => char.charCodeAt(0)))], { type: result.mimeType });
+      const weldedFile = new File([weldedBlob], `welded_layer_${layerNum}.png`, { type: result.mimeType });
+      
+      setImageFile(weldedFile);
+      setAnalysisResult(prev => prev ? { 
+        ...prev, 
+        layer_welded: true,
+        welded_image: weldedFile,
+        welding_description: updatedWeldingDescription
+      } : null);
+      
+    } catch (err: any) {
+      setError(err instanceof Error ? err.message : "An unknown error occurred during layer welding.");
+    } finally {
+      setIsWelding(false);
+    }
+  }, [project.originalImage, project.layers]);
+
+  // New function to approve isolation and proceed to welding
+  const handleApproveIsolation = useCallback(async () => {
+    if (!analysisResult || !imageFile) return;
+    
+    const currentLayerNum = project.currentLayerIndex + 1;
+    
+    // Mark isolation as approved and proceed to welding
+    setAnalysisResult(prev => prev ? { 
+      ...prev, 
+      isolation_approved: true,
+      isolation_needs_approval: false 
+    } : null);
+    
+    // Get the current layer description from analysis
+    const currentLayerDescription = analysisResult[`layer_${currentLayerNum}_description`] || analysisResult.layer_2_description || '';
+    
+    // Proceed to welding
+    setTimeout(() => {
+      handleGenerateWeldingDescription(imageFile, currentLayerDescription, currentLayerNum);
+    }, 500);
+  }, [analysisResult, imageFile, project.currentLayerIndex, handleGenerateWeldingDescription]);
 
   const handleApproveLayer = useCallback(async () => {
     if (!analysisResult || !imageFile) return;
@@ -208,8 +334,6 @@ export default function App() {
     
     // Save current layer to project
     const currentLayerNum = project.currentLayerIndex + 1;
-    console.log('Approving layer:', currentLayerNum);
-    console.log('Current project state:', project);
     
     const newLayer: LayerData = {
       id: `layer-${currentLayerNum}`,
@@ -245,10 +369,6 @@ export default function App() {
     const nextLayerNum = currentProject.currentLayerIndex + 1;
     const previousLayerDescriptions = currentProject.layers.map(layer => layer.description);
     
-    console.log('Starting analysis for layer:', nextLayerNum);
-    console.log('Project currentLayerIndex:', currentProject.currentLayerIndex);
-    console.log('Previous layer descriptions:', previousLayerDescriptions);
-    
     // Reset to original image for next layer analysis
     setImageFile(currentProject.originalImage);
     setAnalysisResult(null);
@@ -258,10 +378,6 @@ export default function App() {
     // Start analysis for next layer using original image
     try {
       const imagePart = await fileToGenerativePart(currentProject.originalImage);
-      console.log('About to call analyzeImageLayer with:', { 
-        layerNumber: nextLayerNum, 
-        previousLayersCount: previousLayerDescriptions.length 
-      });
       
       const result = await analyzeImageLayer(
         imagePart.inlineData.data, 
@@ -270,23 +386,17 @@ export default function App() {
         previousLayerDescriptions
       );
       
-      // Convert result to expected format (this is a temporary bridge)
+      // Convert result to expected format
       const layerDescriptionKey = `layer_${nextLayerNum}_description`;
       const adaptedResult: AnalysisResponse = {
         layer_1_description: result[layerDescriptionKey] || result.layer_1_description || `Layer ${nextLayerNum} description not found`,
         reasoning: result.reasoning,
       };
       
-      console.log('Layer analysis result:', JSON.stringify(result, null, 2));
-      console.log('Looking for key:', layerDescriptionKey);
-      console.log('Adapted result:', JSON.stringify(adaptedResult, null, 2));
-      
       setAnalysisResult(adaptedResult);
       
-      // Auto-generate isolation description
-      console.log('🔸 About to auto-generate isolation description for Layer', nextLayerNum);
+      // Auto-generate isolation description for all layers
       setTimeout(() => {
-        console.log('🔸 Calling handleGenerateIsolationDescription');
         handleGenerateIsolationDescription(currentProject.originalImage, adaptedResult, nextLayerNum);
       }, 500);
       
@@ -298,17 +408,43 @@ export default function App() {
   }, []);
 
   const handleRerunIsolation = useCallback(() => {
-    setAnalysisResult(prev => prev ? { ...prev, layer_isolated: false } : null);
-  }, []);
+    // Reset isolation and welding states to start over
+    setAnalysisResult(prev => prev ? { 
+      ...prev, 
+      layer_isolated: false,
+      layer_welded: false,
+      isolation_needs_approval: false,
+      isolation_approved: false,
+      isolated_image: undefined,
+      welded_image: undefined,
+      welding_description: undefined
+    } : null);
+    
+    // For Layer 2+, we might want to go back to the original image
+    const currentLayerNum = project.currentLayerIndex + 1;
+    if (currentLayerNum > 1 && project.originalImage) {
+      setImageFile(project.originalImage);
+    }
+    
+    // Auto-run isolation again if we have a description
+    if (analysisResult?.isolation_description) {
+      setTimeout(() => {
+        handleIsolateLayer(analysisResult.isolation_description);
+      }, 100);
+    }
+  }, [project, analysisResult]);
 
 
-  const canAnalyze = imageFile && !isLoading && !isGenerating && !isGeneratingDescription;
+  const canAnalyze = imageFile && !isLoading && !isGenerating && !isGeneratingDescription && !isWelding && !isGeneratingWeldingDescription;
 
   return (
     <div className="min-h-screen bg-slate-900 text-slate-200 font-sans flex flex-col">
       <Header />
       <main className="flex-grow container mx-auto p-4">
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        {/* API Monitor */}
+        <ApiMonitor />
+        
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
           {/* Left Column: Controls */}
           <div className="flex flex-col gap-3">
             {!imageFile ? (
@@ -316,17 +452,19 @@ export default function App() {
                 onImageUpload={handleImageUpload} 
                 disabled={isLoading || isGenerating || isGeneratingDescription}
               />
-            ) : (
-              <div className="bg-slate-800 rounded-lg p-4 border border-slate-700 animate-fade-in">
-                <div>
-                  <p className="text-sm font-semibold text-slate-100">Image Loaded</p>
-                  <p className="text-xs text-slate-400 truncate" title={imageFile.name}>{imageFile.name}</p>
-                </div>
-              </div>
-            )}
+            ) : null}
             
             {imageFile && (
               <div className="flex flex-col gap-3 animate-fade-in">
+                {/* Export button */}
+                <div className="flex justify-end">
+                  <ExportButton 
+                    project={project}
+                    currentImage={imageFile}
+                    currentLayerNumber={project.currentLayerIndex + 1}
+                  />
+                </div>
+                
                 {error && (
                   <div className="bg-red-900/50 border border-red-700 text-red-200 px-4 py-3 rounded-lg text-center" role="alert">
                     <strong className="font-bold">Error: </strong>
@@ -344,9 +482,14 @@ export default function App() {
             )}
           </div>
 
-          {/* Right Column: Viewer */}
+          {/* Middle Column: Viewer */}
           <div className="lg:sticky lg:top-24">
             <ImageViewer imageUrl={imageUrl} />
+          </div>
+          
+          {/* Right Column: Layers Panel */}
+          <div className="lg:sticky lg:top-24">
+            <LayersPanel project={project} />
           </div>
         </div>
       </main>
@@ -357,9 +500,12 @@ export default function App() {
       <ButtonBar
         imageFile={imageFile}
         analysisResult={analysisResult}
+        error={error}
         isLoading={isLoading}
         isGenerating={isGenerating}
         isGeneratingDescription={isGeneratingDescription}
+        isWelding={isWelding}
+        isGeneratingWeldingDescription={isGeneratingWeldingDescription}
         canAnalyze={canAnalyze}
         currentLayerNumber={project.currentLayerIndex + 1}
         onClearImage={handleClearImage}
@@ -367,6 +513,7 @@ export default function App() {
         onGenerateDescription={handleGenerateIsolationDescription}
         onIsolateLayer={() => analysisResult?.isolation_description && handleIsolateLayer(analysisResult.isolation_description)}
         onApproveLayer={handleApproveLayer}
+        onApproveIsolation={handleApproveIsolation}
         onRerunIsolation={handleRerunIsolation}
       />
     </div>

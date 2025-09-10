@@ -1,22 +1,29 @@
 /**
  * 🚨 READ FIRST: /DEVELOPMENT_GUIDE.md
+ * 🚨 LAYER 1 CRITICAL: /LAYER_1_CRITICAL_DO_NOT_MODIFY.md
  * 
  * CRITICAL: This file contains core AI logic for layer analysis.
  * Changes to prompts, parameters, or logic MUST maintain >90% visual success rate.
  * Review development guide before making ANY changes.
  * 
+ * ⚠️ WARNING: Layer 1 functions (generateIsolationDescription, isolateLayer) are FROZEN
+ * DO NOT MODIFY Layer 1 implementation - see LAYER_1_CRITICAL_DO_NOT_MODIFY.md
+ * 
  * Key responsibilities:
- * - Layer 1 identification with strict consistency rules
+ * - Layer 1 identification with strict consistency rules (DO NOT MODIFY)
  * - Single-fill layer isolation (no multi-color mixing)
  * - Transparent background generation
  * - Temperature-controlled AI parameters for deterministic output
  */
 import { GoogleGenAI, Type, Modality } from "@google/genai";
 
-const ai = new GoogleGenAI({ apiKey: import.meta.env.VITE_API_KEY });
+// Use Key 2 - PAID API (much higher limits)
+const API_KEY_2_PAID = 'AIzaSyDBClycr-IQ2v2lLnk0-ZQz2eazqE7RByc';
+const ai = new GoogleGenAI({ apiKey: API_KEY_2_PAID });
 
 const analysisModel = 'gemini-2.5-flash';
 const imageEditingModel = 'gemini-2.5-flash-image-preview';
+
 
 const getAnalysisSystemInstruction = (layerNumber: number, previousLayers?: string[]) => `
 You are an expert in analyzing layered vector art and papercraft. 
@@ -159,14 +166,14 @@ OUTPUT: Precise black shape silhouettes on transparent background.`
 
     try {
         const response = await ai.models.generateContent({
-            model: imageEditingModel,
-            contents: { parts: [imagePart, textPart] },
-            config: {
-                responseModalities: [Modality.IMAGE, Modality.TEXT],
-                temperature: 0.01,  // Extremely low temperature for strict consistency
-                topP: 0.5,          // Very reduced randomness
-                topK: 5,            // Severely limit token choices
-            },
+                model: imageEditingModel,
+                contents: { parts: [imagePart, textPart] },
+                config: {
+                    responseModalities: [Modality.IMAGE, Modality.TEXT],
+                    temperature: 0.01,  // Extremely low temperature for strict consistency
+                    topP: 0.5,          // Very reduced randomness
+                    topK: 5,            // Severely limit token choices
+                },
         });
         
         for (const part of response.candidates?.[0]?.content?.parts || []) {
@@ -258,38 +265,58 @@ OUTPUT: Single-fill layer on transparent background.`
     }
 }
 
+// ⚠️ LAYER 1 CRITICAL: DO NOT MODIFY THIS FUNCTION FOR LAYER 1
+// See /LAYER_1_CRITICAL_DO_NOT_MODIFY.md for details
 export async function generateIsolationDescription(base64ImageData: string, mimeType: string, layerAnalysis: string, layerNumber: number = 1): Promise<string> {
-  const imagePart = {
-    inlineData: {
-      data: base64ImageData,
-      mimeType: mimeType,
-    },
-  };
+  // Only include image if provided (optimization to reduce tokens)
+  const parts = base64ImageData ? [
+    {
+      inlineData: {
+        data: base64ImageData,
+        mimeType: mimeType,
+      },
+    }
+  ] : [];
 
-  const textPart = {
-      text: `Based on this layer analysis: "${layerAnalysis}"
+  const textPart = layerNumber === 1 
+    ? {
+        text: `Based on this layer analysis: "${layerAnalysis}"
 
-Create a detailed description of what the ISOLATED Layer ${layerNumber} should look like when extracted with transparency.
+Create a detailed description of what the ISOLATED Layer 1 should look like when extracted with transparency.
 
 Your description should specify:
-1. What parts will be visible (the actual Layer ${layerNumber} elements)
+1. What parts will be visible (the actual Layer 1 elements)
 2. What parts will be transparent (background and other layer colors)
 3. The single unified color/fill that should be applied to all visible elements
 4. The overall appearance on a transparent background
 
-
 Focus on describing the visual result after isolation, not the analysis process.
 
 Example format: "The isolated layer shows [specific elements] rendered in [single color] on a completely transparent background, with all [other colors/elements] areas made transparent." `
-  };
+    }
+    : {
+        text: `Based on this layer analysis: "${layerAnalysis}"
+
+Create a simple description for isolating ONLY Layer ${layerNumber} elements without including other layers.
+
+Your description should specify:
+1. What Layer ${layerNumber} parts will be visible (only the current layer elements)
+2. What will be transparent (everything else, including other layers and background)
+3. The single color that Layer ${layerNumber} uses
+4. The isolated result on transparent background
+
+Keep it simple - describe only Layer ${layerNumber} isolation, not reconstruction or welding.
+
+Example: "The isolated Layer ${layerNumber} shows only the [color] [elements] from the analysis, rendered in [single color] on transparent background. All other areas become transparent." `
+    };
 
   try {
     const response = await ai.models.generateContent({
-      model: analysisModel,
-      contents: { parts: [imagePart, textPart] },
-      config: {
-        systemInstruction: "You are an expert at describing isolated layer visualizations for cardstock cutting. Provide clear, specific descriptions of what isolated layers should look like.",
-      },
+        model: analysisModel,
+        contents: { parts: [...parts, textPart] },
+        config: {
+          systemInstruction: "You are an expert at describing isolated layer visualizations for cardstock cutting. Provide clear, specific descriptions of what isolated layers should look like.",
+        },
     });
 
     return response.text.trim();
@@ -299,6 +326,137 @@ Example format: "The isolated layer shows [specific elements] rendered in [singl
   }
 }
 
+// Step 1: Isolate just the current layer (no welding)
+export async function isolateCurrentLayer(base64ImageData: string, mimeType: string, layerDescription: string, layerNumber: number = 1): Promise<{ base64: string, mimeType: string }> {
+    const imagePart = {
+        inlineData: {
+          data: base64ImageData,
+          mimeType: mimeType,
+        },
+      };
+
+    const textPart = layerNumber === 1
+        ? {
+            text: `Your task is to perform a precise image masking operation for Layer 1. Your output MUST be a PNG image with a transparent alpha channel.
+
+The new image will contain ONLY the specific layer described here: "${layerDescription}".
+
+Follow these rules with absolute precision. These are commands, not suggestions.
+
+1.  **ABSOLUTE PRIORITY: TRANSPARENT BACKGROUND.** The output format MUST be a PNG with a fully transparent background. Everything that is NOT part of the described layer must have an alpha value of 0. DO NOT output a solid background.
+
+2.  **ABSOLUTE PRIORITY: SINGLE FILL UNIFICATION.** The final isolated layer shape you create MUST be unified into a single solid color. Identify the most dominant color of the described area in the original image and use that color for the entire shape. DO NOT include multiple colors, shades, or gradients. The result must be a single, clean shape with one solid fill color.
+
+3.  **EXECUTION:** Use the description to perfectly identify the correct conceptual component in the original image. Create a mask from this component. Produce a new PNG image containing only this masked component, filled with the unified color, on a transparent background.`
+        }
+        : {
+            text: `Your task is to isolate ONLY Layer ${layerNumber} without any welding or combination with other layers.
+
+The new image will contain ONLY the specific layer described here: "${layerDescription}".
+
+Follow these rules with absolute precision:
+
+1.  **TRANSPARENT BACKGROUND:** Output must be PNG with fully transparent background.
+
+2.  **SINGLE FILL UNIFICATION:** All Layer ${layerNumber} elements must be unified into a single solid color.
+
+3.  **ISOLATION ONLY:** Extract ONLY the Layer ${layerNumber} elements as they appear, without reconstructing or adding other layer areas.
+
+4.  **EXECUTION:** Create a precise mask of the described Layer ${layerNumber} components. Fill with unified color on transparent background.`
+        };
+
+    try {
+        const response = await ai.models.generateContent({
+                model: imageEditingModel,
+                contents: { parts: [imagePart, textPart] },
+                config: {
+                    responseModalities: [Modality.IMAGE, Modality.TEXT],
+                },
+        });
+        
+        for (const part of response.candidates?.[0]?.content?.parts || []) {
+            if (part.inlineData) {
+                return {
+                    base64: part.inlineData.data,
+                    mimeType: part.inlineData.mimeType,
+                };
+            }
+        }
+
+        throw new Error("The model did not return an image part in its response.");
+
+    } catch (error: any) {
+        console.error("Error calling Gemini API for current layer isolation:", error);
+        const errorMessage = error?.message || error?.toString() || "Unknown error";
+        throw new Error(`Failed to isolate current layer: ${errorMessage}`);
+    }
+}
+
+// Step 2: Weld current layer with all previous layers
+export async function weldLayerWithPrevious(originalImage: string, currentLayerImage: string, originalMimeType: string, currentLayerDescription: string, layerNumber: number, previousLayers: string[]): Promise<{ base64: string, mimeType: string }> {
+    const originalImagePart = {
+        inlineData: {
+          data: originalImage,
+          mimeType: originalMimeType,
+        },
+    };
+    
+    const currentLayerPart = {
+        inlineData: {
+          data: currentLayerImage,
+          mimeType: "image/png",
+        },
+    };
+
+    const textPart = {
+        text: `Your task is to create the COMPLETE Layer ${layerNumber} by welding the isolated layer with ALL previous layers.
+
+You have:
+1. Original image showing all layers
+2. Isolated Layer ${layerNumber} image
+
+Previous layers that must be welded to Layer ${layerNumber}:
+${previousLayers.map((desc, idx) => `- Layer ${idx + 1}: ${desc}`).join('\n')}
+
+WELDING RULES:
+1. **COMBINE ALL LAYERS:** Layer ${layerNumber} must include ALL areas from Layer ${layerNumber - 1}${layerNumber > 2 ? `, Layer ${layerNumber - 2}, etc.` : ''}
+2. **UNIFORM SINGLE COLOR:** ALL areas (current layer + all previous layers) must be rendered in exactly the same uniform color - the dominant color from Layer ${layerNumber}. No variations, gradients, or multiple shades allowed.
+3. **TRANSPARENT:** Only background areas that were never part of any layer
+4. **COMPLETE PIECE:** Think of this as the complete cardstock piece that includes all upper layers welded to it
+5. **COLOR CONSISTENCY:** Every pixel of the visible shape must be the exact same color value - no lighter/darker variations
+
+OUTPUT: Complete unified Layer ${layerNumber} with all previous layers absorbed, rendered in ONE UNIFORM COLOR on transparent background. All visible areas must have identical color values.`
+    };
+
+    try {
+        const response = await ai.models.generateContent({
+            model: imageEditingModel,
+            contents: { parts: [originalImagePart, currentLayerPart, textPart] },
+            config: {
+                responseModalities: [Modality.IMAGE, Modality.TEXT],
+            },
+        });
+        
+        for (const part of response.candidates?.[0]?.content?.parts || []) {
+            if (part.inlineData) {
+                return {
+                    base64: part.inlineData.data,
+                    mimeType: part.inlineData.mimeType,
+                };
+            }
+        }
+
+        throw new Error("The model did not return an image part in its response.");
+
+    } catch (error) {
+        console.error("Error calling Gemini API for layer welding:", error);
+        throw new Error("Failed to weld layers from the AI model.");
+    }
+}
+
+// ⚠️ LAYER 1 CRITICAL: DO NOT MODIFY THIS FUNCTION - WORKING AT 86% SUCCESS RATE
+// This function is ONLY for Layer 1 and MUST NOT BE CHANGED
+// See /LAYER_1_CRITICAL_DO_NOT_MODIFY.md for details
 export async function isolateLayer(base64ImageData: string, mimeType: string, layerDescription: string, layerNumber: number = 1): Promise<{ base64: string, mimeType: string }> {
     const imagePart = {
         inlineData: {
@@ -318,17 +476,18 @@ Follow these rules with absolute precision. These are commands, not suggestions.
 
 2.  **ABSOLUTE PRIORITY: SINGLE FILL UNIFICATION.** The final isolated layer shape you create MUST be unified into a single solid color. Identify the most dominant color of the described area in the original image and use that color for the entire shape. DO NOT include multiple colors, shades, or gradients. The result must be a single, clean shape with one solid fill color.
 
+${layerNumber > 1 ? `3.  **CRITICAL LAYER STACKING RULE:** Layer ${layerNumber} must include the COMPLETE area that this layer occupies in the physical cardstock stack. This includes areas where upper layers sit on top of it. All parts of Layer ${layerNumber} must be welded together as ONE PIECE with the same single color fill where they touch.
 
-3.  **EXECUTION:** Use the description to perfectly identify the correct conceptual component in the original image. Create a mask from this component. Produce a new PNG image containing only this masked component, filled with the unified color, on a transparent background.`
+4.  **EXECUTION:** Use the description to identify the conceptual component in the original image. Reconstruct the COMPLETE shape of this layer, including areas currently covered by upper layers. Weld all parts together as one unified piece. Produce a new PNG image containing this complete unified component, filled with the single unified color, on a transparent background.` : `3.  **EXECUTION:** Use the description to perfectly identify the correct conceptual component in the original image. Create a precise mask from this component as it appears. Produce a new PNG image containing only this masked component, filled with the unified color, on a transparent background.`}`
     };
 
     try {
         const response = await ai.models.generateContent({
-            model: imageEditingModel,
-            contents: { parts: [imagePart, textPart] },
-            config: {
-                responseModalities: [Modality.IMAGE, Modality.TEXT],
-            },
+                model: imageEditingModel,
+                contents: { parts: [imagePart, textPart] },
+                config: {
+                    responseModalities: [Modality.IMAGE, Modality.TEXT],
+                },
         });
         
         for (const part of response.candidates?.[0]?.content?.parts || []) {
@@ -342,8 +501,59 @@ Follow these rules with absolute precision. These are commands, not suggestions.
 
         throw new Error("The model did not return an image part in its response.");
 
-    } catch (error) {
+    } catch (error: any) {
         console.error("Error calling Gemini API for layer isolation:", error);
-        throw new Error("Failed to isolate the layer from the AI model.");
+        // Include the actual error message for debugging
+        const errorMessage = error?.message || error?.toString() || "Unknown error";
+        throw new Error(`Failed to isolate the layer: ${errorMessage}`);
     }
+}
+
+// Generate description for welding step
+export async function generateWeldingDescription(base64ImageData: string, mimeType: string, currentLayerDescription: string, layerNumber: number, previousLayers: string[]): Promise<string> {
+  const imagePart = {
+    inlineData: {
+      data: base64ImageData,
+      mimeType: mimeType,
+    },
+  };
+
+  const textPart = {
+      text: `Based on the current layer analysis: "${currentLayerDescription}"
+
+Create a detailed description of what the WELDED Layer ${layerNumber} should look like when combined with all previous layers.
+
+Previous layers that will be welded to Layer ${layerNumber}:
+${previousLayers.map((desc, idx) => `- Layer ${idx + 1}: ${desc}`).join('\n')}
+
+**WELDING CONCEPT:**
+- Layer ${layerNumber} will include ALL areas from previous layers
+- All areas (current + previous layers) will be rendered in Layer ${layerNumber} color
+- Think: Layer ${layerNumber} + Layer ${layerNumber - 1}${layerNumber > 2 ? ` + Layer ${layerNumber - 2}` : ''} = one unified piece
+
+Your description should specify:
+1. What the complete welded Layer ${layerNumber} looks like (current + all previous layer areas)
+2. What parts will be transparent (only background areas never part of any layer)
+3. The single unified color for all welded areas
+4. The overall appearance on a transparent background
+
+Focus on describing the complete physical cardstock piece that would be cut.
+
+Example format: "The welded Layer ${layerNumber} shows [current layer areas] combined with [previous layer areas] all rendered in [Layer ${layerNumber} color]. Only the original background areas remain transparent." `
+  };
+
+  try {
+    const response = await ai.models.generateContent({
+      model: analysisModel,
+      contents: { parts: [imagePart, textPart] },
+      config: {
+        systemInstruction: "You are an expert at describing welded layer visualizations for cardstock cutting. Provide clear descriptions of complete welded layers.",
+      },
+    });
+
+    return response.text.trim();
+  } catch (error) {
+    console.error("Error generating welding description:", error);
+    throw new Error("Failed to generate welding description.");
+  }
 }

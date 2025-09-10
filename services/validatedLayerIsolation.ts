@@ -107,7 +107,7 @@ export async function isolateLayerWithValidation(
   base64ImageData: string, 
   mimeType: string, 
   layerDescription: string,
-  maxRetries: number = 8,
+  maxRetries: number = 1,  // Disabled retries to save API quota
   onProgress?: (attempt: number, validation: ValidationResult) => void
 ): Promise<IsolationResult> {
   

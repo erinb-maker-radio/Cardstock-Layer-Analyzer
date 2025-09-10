@@ -5,9 +5,12 @@ import type { AnalysisResponse } from '../types';
 interface ButtonBarProps {
   imageFile: File | null;
   analysisResult: AnalysisResponse | null;
+  error: string | null;
   isLoading: boolean;
   isGenerating: boolean;
   isGeneratingDescription: boolean;
+  isWelding: boolean;
+  isGeneratingWeldingDescription: boolean;
   canAnalyze: boolean;
   currentLayerNumber: number;
   onClearImage: () => void;
@@ -15,15 +18,19 @@ interface ButtonBarProps {
   onGenerateDescription: () => void;
   onIsolateLayer: () => void;
   onApproveLayer: () => void;
+  onApproveIsolation: () => void;
   onRerunIsolation: () => void;
 }
 
 export const ButtonBar: React.FC<ButtonBarProps> = ({
   imageFile,
   analysisResult,
+  error,
   isLoading,
   isGenerating,
   isGeneratingDescription,
+  isWelding,
+  isGeneratingWeldingDescription,
   canAnalyze,
   currentLayerNumber,
   onClearImage,
@@ -31,6 +38,7 @@ export const ButtonBar: React.FC<ButtonBarProps> = ({
   onGenerateDescription,
   onIsolateLayer,
   onApproveLayer,
+  onApproveIsolation,
   onRerunIsolation,
 }) => {
   // Determine which buttons to show based on state
@@ -38,38 +46,93 @@ export const ButtonBar: React.FC<ButtonBarProps> = ({
     if (!imageFile) {
       return null; // No buttons when no image
     }
+    
+    // If there's an error, show retry button
+    if (error) {
+      return (
+        <button
+          onClick={onAnalyze}
+          className="flex-1 max-w-md inline-flex items-center justify-center px-6 py-2.5 bg-red-600 hover:bg-red-700 text-white font-bold rounded-lg transition-all focus:outline-none focus:ring-2 focus:ring-red-500"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+          </svg>
+          Retry Process
+        </button>
+      );
+    }
 
     // Show loading state during auto-processing
-    if (isLoading || isGeneratingDescription) {
+    if (isLoading || isGenerating || isGeneratingDescription || isWelding || isGeneratingWeldingDescription) {
       return (
         <div className="flex items-center justify-center gap-2 text-slate-400">
           <LoadingSpinner />
           <span className="font-medium">
-            {isLoading ? 'Analyzing layer...' : 'Generating isolation description...'}
+            {isLoading 
+              ? 'Analyzing layer...' 
+              : isGeneratingDescription 
+                ? 'Generating description...'
+                : isGenerating
+                  ? 'Isolating layer...'
+                  : isGeneratingWeldingDescription
+                    ? 'Generating welding description...'
+                    : isWelding
+                      ? 'Welding layers...'
+                      : 'Processing...'}
           </span>
         </div>
       );
     }
 
-    // If layer is approved, show success state
-    if (analysisResult?.layer_approved) {
-      return (
-        <div className="flex items-center justify-center gap-2 text-green-400">
-          <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-          </svg>
-          <span className="font-semibold">Layer 1 Approved - Ready for Layer 2</span>
-        </div>
-      );
-    }
+    // Always show approve and re-run buttons when we have analysis results
+    if (analysisResult) {
+      // If layer is approved, show success state
+      if (analysisResult.layer_approved) {
+        return (
+          <div className="flex items-center justify-center gap-2 text-green-400">
+            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+            </svg>
+            <span className="font-semibold">Layer {currentLayerNumber} Approved - Ready for Layer {currentLayerNumber + 1}</span>
+          </div>
+        );
+      }
 
-    // If layer is isolated but not approved, show approval buttons
-    if (analysisResult?.layer_isolated) {
+      // NEW: Show approve/re-run buttons after Layer 2+ isolation (before welding)
+      if (analysisResult.isolation_needs_approval && analysisResult.layer_isolated && !analysisResult.layer_welded) {
+        return (
+          <>
+            <button
+              onClick={onApproveIsolation}
+              disabled={isLoading || isGenerating || isGeneratingDescription || isWelding || isGeneratingWeldingDescription}
+              className="flex-1 max-w-xs inline-flex items-center justify-center px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg transition-all focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+              </svg>
+              Approve Isolation & Proceed to Welding
+            </button>
+            <button
+              onClick={onRerunIsolation}
+              disabled={isLoading || isGenerating || isGeneratingDescription || isWelding || isGeneratingWeldingDescription}
+              className="flex-1 max-w-xs inline-flex items-center justify-center px-4 py-2.5 bg-yellow-600 hover:bg-yellow-700 text-white font-bold rounded-lg transition-all focus:outline-none focus:ring-2 focus:ring-yellow-500 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+              </svg>
+              Re-run Isolation
+            </button>
+          </>
+        );
+      }
+
+      // Show approve and re-run buttons for final approval (after welding or for Layer 1)
       return (
         <>
           <button
             onClick={onApproveLayer}
-            className="flex-1 max-w-xs inline-flex items-center justify-center px-4 py-2.5 bg-green-600 hover:bg-green-700 text-white font-bold rounded-lg transition-all focus:outline-none focus:ring-2 focus:ring-green-500"
+            disabled={isLoading || isGenerating || isGeneratingDescription || isWelding || isGeneratingWeldingDescription}
+            className="flex-1 max-w-xs inline-flex items-center justify-center px-4 py-2.5 bg-green-600 hover:bg-green-700 text-white font-bold rounded-lg transition-all focus:outline-none focus:ring-2 focus:ring-green-500 disabled:opacity-50 disabled:cursor-not-allowed"
           >
             <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
@@ -78,39 +141,19 @@ export const ButtonBar: React.FC<ButtonBarProps> = ({
           </button>
           <button
             onClick={onRerunIsolation}
-            className="flex-1 max-w-xs inline-flex items-center justify-center px-4 py-2.5 bg-yellow-600 hover:bg-yellow-700 text-white font-bold rounded-lg transition-all focus:outline-none focus:ring-2 focus:ring-yellow-500"
+            disabled={isLoading || isGenerating || isGeneratingDescription || isWelding || isGeneratingWeldingDescription}
+            className="flex-1 max-w-xs inline-flex items-center justify-center px-4 py-2.5 bg-yellow-600 hover:bg-yellow-700 text-white font-bold rounded-lg transition-all focus:outline-none focus:ring-2 focus:ring-yellow-500 disabled:opacity-50 disabled:cursor-not-allowed"
           >
             <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
             </svg>
-            Re-run Isolation
+            Re-run Process
           </button>
         </>
       );
     }
 
-    // If isolation description exists, show isolate button (primary action)
-    if (analysisResult?.isolation_description) {
-      return (
-        <button
-          onClick={onIsolateLayer}
-          disabled={isGenerating}
-          className={`flex-1 max-w-md inline-flex items-center justify-center px-6 py-2.5 text-white font-bold rounded-lg transition-all focus:outline-none
-            ${isGenerating
-              ? 'bg-slate-600 cursor-not-allowed'
-              : 'bg-indigo-600 hover:bg-indigo-700 focus:ring-2 focus:ring-indigo-500 animate-pulse'
-            }`}
-        >
-          {isGenerating && <LoadingSpinner />}
-          <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4" />
-          </svg>
-          {isGenerating ? 'Isolating Layer...' : `Isolate Layer ${currentLayerNumber}`}
-        </button>
-      );
-    }
-
-    // Shouldn't reach here with auto-processing
+    // No buttons to show (no analysis yet)
     return null;
   };
 
